@@ -11,9 +11,9 @@ library(reticulate)
 
 
 ###########Load functions###########
-source(getBED)
-source(returnSeq)
-source(returnVar)
+source(getBED.r)
+source(returnSeq.r)
+source(returnVar.r)
 
 
 
