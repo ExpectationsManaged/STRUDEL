@@ -14,7 +14,7 @@ getBED <- function(path2File){
   
   ###########Compile list of loci##########
   
-  locus_list <- auSTRs_bed |>
+  locus_list <- auSTRs_bed %>%
     distinct(Locus)
   
   return(auSTRs_bed, locus_list)
