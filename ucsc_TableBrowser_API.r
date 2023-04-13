@@ -20,8 +20,8 @@ source("returnVar.r")
 ###########Load bed file###########
 list_bed <- getBED(file.choose())
 
-	bed_loci <- list_bed[1]
-	list_loci <- list_bed[2]
+	bed_loci <- list_bed[[1]]
+	list_loci <- list_bed[[2]]
 
 
 
