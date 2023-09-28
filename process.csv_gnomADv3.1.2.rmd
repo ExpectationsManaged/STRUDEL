@@ -1,0 +1,301 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+{
+  library(tidyverse)
+}
+
+config_Loci <- read_tsv("data/FSSG_Locus_Info.tsv", 
+                        col_types = cols(start_ISFGMinimum = col_double(), 
+                                         stop_ISFGMinimum = col_double()))
+
+pop_include <- c("African/African American", "European (non-Finnish)", "South Asian", "East Asian", "Latino/Admixed American")
+
+config_Loci_reducedSet <- config_Loci %>% 
+  filter(!is.na(start_ISFGMinimum))
+
+```
+
+
+
+```{r}
+###########Functions##########
+create.dfBatch <- function(df, SampleName){
+  
+  dfBatch <- dfActive %>% 
+    mutate(SampleName = SampleName) %>%
+    select(SampleName, everything())
+  
+  return(dfBatch)
+  
+}
+
+append.dfBatch <- function(df, SampleName, dfBatch){
+  
+  dfBatch_temp <- dfActive %>% 
+    mutate(SampleName = SampleName) %>%
+    select(SampleName, everything())
+  
+  dfBatch <- bind_rows(dfBatch, dfBatch_temp)
+  
+  return(dfBatch)
+  
+}
+
+
+```
+
+
+
+```{r}
+###########Biblioteca##########
+{
+  library(tidyverse)
+}
+
+
+###########List files in directory###########
+pathList.Loci <- list.files("data/gnomADv3.1.2/Active", 
+           pattern = ".csv", 
+           full.names = TRUE,
+           recursive = TRUE)
+
+
+
+```
+
+
+
+```{r}
+
+###########Walk thru files and merge data###########
+for(i in seq_along(pathList.Loci)){
+
+  dfActive <- read_csv(normalizePath(pathList.Loci[[i]]),
+                       col_types = cols(Chromosome = col_character())) %>% 
+    select(Chromosome, Position, rsIDs, Reference, Alternate, Flags, `Allele Frequency`, contains("Allele Count"), contains("Allele Number"))
+  
+  
+  
+  SampleName <- sub(pattern = "(.*)\\..*$", replacement = "\\1", basename(pathList.Loci[[i]]))
+  
+  if(i == 1){
+    
+    dfBatch <- create.dfBatch(df = dfActive, SampleName = SampleName)
+    
+  }else{
+    
+    dfBatch <- append.dfBatch(df = dfActive, SampleName = SampleName, dfBatch = dfBatch)
+    
+  }
+}
+
+rm(dfActive)
+
+dfBatch -> dfBatch.backup
+```
+
+
+
+```{r}
+#Parsing genomic coordinates from time stamp
+dfBatch <- separate(dfBatch, 
+         col = SampleName, 
+         into = c("Database", "Version", "Genomic Coordinates", "ZZ1", "ZZ2", "ZZ3", "ZZ4", "ZZ5", "ZZ6"), 
+         sep = "_") %>% 
+  select(-contains("ZZ"))
+
+#Pivot long to separate count/number from pop
+dfBatch <- dfBatch %>% 
+  dplyr::rename("globalAF" = `Allele Frequency`) %>% 
+  pivot_longer(cols = contains("Allele"), 
+               names_to = "Population", 
+               names_prefix = "Allele ", 
+               values_to = "Value") %>% 
+  mutate(Metric = dplyr::if_else(str_detect(Population, "Count"), "AC", "AN")) 
+
+#Cleanup prefixes
+dfBatch$Population <- stringr::str_replace(dfBatch$Population,"Count ", "")
+dfBatch$Population <- stringr::str_replace(dfBatch$Population,"Number ", "")
+dfBatch$Population <- stringr::str_replace(dfBatch$Population,"Count", "Global")
+dfBatch$Population <- stringr::str_replace(dfBatch$Population,"Number", "Global")
+
+#Pivot wide to use
+dfBatch <- dfBatch %>% 
+  pivot_wider(names_from = Metric,
+              values_from = Value) %>% 
+  mutate(AF = AC/AN)
+
+# dfBatch <- dfBatch.backup
+# dfBatch -> dfBatch.backup
+
+```
+
+
+```{r}
+#Label temporarily the locus as indel or not
+dfBatch <- dfBatch %>% 
+  mutate(Type = dplyr::if_else(nchar(Reference) == 1 & nchar(Alternate) == 1, "Substitution", "Indel"))
+
+#Calculate reference allele frequency
+temp_refCalc <- dfBatch %>% 
+  dplyr::group_by(`Genomic Coordinates`, Chromosome, Position, rsIDs, Reference, Population) %>% 
+  dplyr::summarize(AF = 1- (sum(AC)/(sum(AN)/n()))) %>% 
+  ungroup() 
+
+#Annotate global MAF
+temp_gMAF_Calc <- temp_refCalc %>% 
+  filter(Population == "Global") %>%
+  mutate(globalMAF = dplyr::if_else(AF >= 0.5, AF - 1, 1 - AF))
+
+#Merge
+temp_refCalc <- left_join(temp_refCalc, 
+                          select(temp_gMAF_Calc, -Population, -AF), 
+                          by = c("Genomic Coordinates", "Chromosome", "Position", "rsIDs", "Reference"))
+
+#Join ref freq
+dfBatch <- left_join(dfBatch, select(temp_refCalc, -AF, -globalMAF),
+                     by = c("Genomic Coordinates", "Chromosome", "Position", "rsIDs", "Reference", "Population"))
+
+#Merge
+dfBatch <- dplyr::bind_rows(dfBatch, temp_refCalc) %>% 
+  dplyr::arrange(Chromosome, Position, rsIDs, Population)
+
+#Call variation
+dfBatch <- dfBatch %>% 
+  mutate(Allele = dplyr::if_else(is.na(Alternate), Reference, Alternate))
+
+#Add repeat region information
+dfBatch <- left_join(dfBatch, 
+                     select(config_Loci_reducedSet, -Chromosome, -start_FR, -stop_FR), 
+                     by = "Genomic Coordinates")
+
+#Label coordinates as repeat region or flank and row as Alternate or Reference
+dfBatch <- dfBatch %>% 
+  mutate(GPS = dplyr::if_else((start_ISFGMinimum - Position) < 0 & (stop_ISFGMinimum - Position) < 0 | (start_ISFGMinimum - Position) > 0 & (stop_ISFGMinimum - Position) > 0, "FR", 
+                              dplyr::if_else((start_RR - Position) < 0 & (stop_RR - Position) < 0 | (start_RR - Position) > 0 & (stop_RR - Position) > 0, "MR","RR"))) %>% 
+  select(Locus, GPS, Type, everything()) %>% 
+  filter(Population %in% pop_include,
+         !is.na(Locus)) %>% 
+  mutate(isRef = dplyr::if_else(is.na(Alternate), "Ref", "Alt")) 
+
+#Filter out undesired variants
+dfBatch <- dfBatch %>% 
+  filter(GPS != "RR" & !(GPS == "MR" & Type == "Indel")) 
+
+#Label highest frequency across populations
+temp_maxPop <- dfBatch %>% 
+  filter(isRef == "Alt") %>% 
+  group_by(Locus, Chromosome, Position, Alternate) %>% 
+  summarize(maxPop = max(AF))
+
+dfBatch <- left_join(dfBatch, select(temp_maxPop, Locus, Chromosome, Position, Alternate, maxPop))
+
+#collect garbage
+rm(temp_refCalc, temp_gMAF_Calc, temp_maxPop)
+
+#backup df optionally
+# dfBatch <- dfBatch.backup
+# dfBatch -> dfBatch.backup
+
+```
+
+
+
+```{r}
+
+#Annotate multiallelic sites
+multiallelicPositions <- dfBatch %>% 
+  filter(Type == "Substitution") %>% 
+  dplyr::group_by(Locus, Chromosome, Position, Reference) %>% 
+  summarise(count = n()) %>% 
+  filter(count >= 10)
+
+
+#Reformat Position, Reference, and Alternate columns
+dfBatch <- dfBatch %>% 
+  mutate(indelRef = dplyr::if_else(nchar(Reference) > nchar(Alternate), 
+                                 substring(Reference, 2), "-"), 
+         indelAlt = dplyr::if_else(nchar(Reference) > nchar(Alternate), 
+                                 "del", substring(Alternate, 2)),
+         indelPos = dplyr::if_else(nchar(Reference) > nchar(Alternate),
+                                 paste0(Position + (nchar(Reference) - 1)), paste0(Position, ".1"))) %>% 
+  mutate(finalRef = dplyr::if_else(Type == "Indel", indelRef, Reference),
+         finalAlt = dplyr::if_else(Type == "Indel", indelAlt, Alternate),
+         finalPos = dplyr::if_else(Type == "Indel", indelPos, as.character(Position))) %>% 
+  mutate(Reference = dplyr::if_else(isRef == "Ref", Reference,  finalRef), 
+                Alternate = dplyr::if_else(isRef == "Ref", Alternate, finalAlt),
+                Position = dplyr::if_else(isRef == "Ref", as.character(Position), finalPos)) %>% 
+  select(Locus, GPS, Type, Database, Version, `Genomic Coordinates`, rsIDs, Chromosome, Position, Reference, Alternate, everything(), -indelRef, -indelAlt, -indelPos, -finalRef, -finalAlt, -finalPos)
+
+
+```
+
+
+```{r}
+
+#Filter out low-frequency variants
+summary_dfBatch <- dfBatch %>% 
+  filter(maxPop >= 0.001) %>% 
+  mutate(MAF = dplyr::if_else(AF >= 0.5, 1 - AF, AF)) %>% 
+  select(Population, Locus, Chromosome, Position, MAF, AF) %>% 
+  pivot_wider(names_from = Population, 
+              values_from = c("MAF", "AF"))
+
+dfBatch_filtered <- inner_join(dfBatch, select(summary_dfBatch, Locus, Chromosome, Position))
+
+summary_dfBatch <- left_join(summary_dfBatch, 
+                             filter(dfBatch_filtered, 
+                                    Population == "East Asian", 
+                                    maxPop >= 0.001) %>% 
+                               select(Locus, Position, rsIDs, Reference, Alternate, Type), 
+                             by = c("Locus", "Position")) %>% 
+  select(Locus, rsIDs, Type, Chromosome, Position, Reference, Alternate, everything())
+
+```
+
+
+```{r}
+
+
+dfBatch_filtered %>% 
+  filter(Locus == "D5S818") %>% 
+  ggplot(aes(x = "", 
+             y = AF, 
+             fill = Allele)) +
+  geom_bar(stat = "identity") +
+  coord_polar(theta = "y") +
+  facet_grid(Position~Population) +
+  theme(axis.text = element_blank(),
+  axis.ticks = element_blank(),
+  panel.grid = element_blank(),
+  plot.title = element_text(hjust = 0.5),
+  legend.title.align = 0.5,
+  strip.text=element_text(size = 10))
+
+         
+```
+
+
+
+```{r}
+
+dfBatch %>% 
+  ggplot(aes(x = "", y = AF, 
+             fill = Alternate)) + 
+  geom_bar(stat = "identity") + 
+  coord_polar(theta = "y") + 
+  facet_grid(Locus~Population) + 
+  theme(axis.text = element_blank(), 
+        axis.ticks = element_blank(), 
+        panel.grid = element_blank(), 
+        plot.title = element_text(hjust = 0.5), 
+        legend.title.align = 0.5, 
+        strip.text=element_text(size = 5))
+
+```
+
