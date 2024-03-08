@@ -22,17 +22,12 @@ extract_string <- function(x, n, i, delimiter){
 
 ```{r}
 
-# db_STRSeq <- read_delim("data/sequence.fasta", 
-#                         delim = "\t", 
-#                         escape_double = FALSE, 
-#                         col_names = FALSE, 
-#                         trim_ws = TRUE)
+dl_STRSeq <- read.table(text = system(paste0("esearch -db nuccore -query '380127 [GPRJ]' | efetch -format fasta"),
+                                      intern = TRUE),
+                        sep = "\t")
 
-# dl_STRSeq <- read.table(text = system(paste0("esearch -db nuccore -query '380127 [GPRJ]' | efetch -format fasta"),
-#                                       intern = TRUE),
-#                         sep = "\t")
-# write_tsv(dl_STRSeq, file = "data/sequence.fasta",
-#           col_names = FALSE)
+write_tsv(dl_STRSeq, file = "data/sequence.fasta",
+          col_names = FALSE)
 
 db_STRSeq <- readDNAStringSet("data/sequence.fasta")
 db_STRSeq_working <- data.frame(id = names(db_STRSeq), 
